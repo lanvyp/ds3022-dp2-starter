@@ -21,7 +21,9 @@ dbt build:  stg_fragments → tests → assembled_phrase
 read_phrase → send_solution (dp2-submit) → kit/check_submission.py → receipt
 ```
 
-My DAG sketch is in [`docs/dag.jpg`](docs/dag.jpg).
+My DAG sketch:
+
+![DAG sketch](docs/dag.jpg)
 
 ---
 
