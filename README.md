@@ -120,6 +120,14 @@ With the real 30-900 s delays, it collected all 21 fragments in **859 s** (about
 
 ---
 
+## What each tool does
+
+| Tool | Its job in my pipeline | What I'd lose without it |
+|---|---|---|
+| **Prefect** | Runs the tasks in order, logs everything, and shows each run in the dashboard. It's also where `retries=0` on scatter and the dbt gate (stop the flow if dbt fails) live. | I'd just have a plain Python script with print statements. No dashboard, no run history, no per-task retries, and it'd be way harder to see where a 15-minute run got stuck. |
+| **DuckDB** | Stores every fragment the moment it arrives (`raw.fragments`, plus `raw.rejected` for bad messages). It's a single file, so there's no server to run. | If the fragments only lived in Python memory, a crash halfway through would lose everything I'd already deleted from the queue. DuckDB is what makes "save, then delete" actually safe. |
+| **dbt** | Cleans and dedupes the data, runs the tests, and builds the phrase in SQL. | Without dbt, the checks would be ad hoc Python. I wouldn't have reusable tests, and nothing would formally stop a bad phrase from being submitted. |
+
 ## Result
 
 > Good tests do not prove your data is correct, but they keep the most embarrassing mistakes far away from your users.
