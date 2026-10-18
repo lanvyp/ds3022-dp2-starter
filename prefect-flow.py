@@ -66,6 +66,33 @@ def init_db() -> None:
             )
         """)
         con.execute("DELETE FROM raw.fragments")
+        # malformed messages go here instead, so bad data never reaches dbt
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS raw.rejected (
+                message_id  VARCHAR,
+                body        VARCHAR,
+                attributes  VARCHAR,
+                reason      VARCHAR,
+                received_at TIMESTAMP
+            )
+        """)
+        con.execute("DELETE FROM raw.rejected")
+
+
+def parse_fragment(msg: dict):
+    """Return (order_no, word, None) if the message is valid, else (None, None, reason)."""
+    attrs = msg.get("MessageAttributes") or {}
+    order_no = (attrs.get("order_no") or {}).get("StringValue")
+    word = (attrs.get("word") or {}).get("StringValue")
+
+    if order_no is None or word is None:
+        return None, None, "missing order_no or word attribute"
+    order_no = order_no.strip()
+    if not order_no.isdigit() or not 1 <= int(order_no) <= EXPECTED:
+        return None, None, f"order_no {order_no!r} is not a number from 1 to {EXPECTED}"
+    if not word.strip():
+        return None, None, "word is empty"
+    return order_no, word, None
 
 
 def queue_counts(queue_url: str) -> dict:
@@ -90,7 +117,9 @@ def queue_counts(queue_url: str) -> dict:
 def collect(queue_url: str) -> int:
     """Long-poll until all fragments are stored and the queue is empty, or time out."""
     logger = get_run_logger()
-    seen: set[str] = set()
+    seen: set[str] = set()   # distinct, valid order numbers stored so far
+    duplicates = 0
+    rejected = 0
     start = time.monotonic()
 
     while True:
@@ -119,21 +148,39 @@ def collect(queue_url: str) -> int:
 
         with duckdb.connect(DB_PATH) as con:
             for msg in messages:
-                attrs = msg["MessageAttributes"]
-                order_no = attrs["order_no"]["StringValue"]
-                word = attrs["word"]["StringValue"]
+                now = datetime.now(timezone.utc)
+                order_no, word, problem = parse_fragment(msg)
 
-                # 1) land first ...
-                con.execute(
-                    "INSERT INTO raw.fragments VALUES (?, ?, ?, ?)",
-                    [order_no, word, datetime.now(timezone.utc), msg["MessageId"]],
-                )
+                # 1) land first (good fragments and malformed ones go to different tables) ...
+                if problem:
+                    con.execute(
+                        "INSERT INTO raw.rejected VALUES (?, ?, ?, ?, ?)",
+                        [msg.get("MessageId"), msg.get("Body"),
+                         str(msg.get("MessageAttributes")), problem, now],
+                    )
+                else:
+                    con.execute(
+                        "INSERT INTO raw.fragments VALUES (?, ?, ?, ?)",
+                        [order_no, word, now, msg["MessageId"]],
+                    )
+
                 # 2) ... then delete, so a crash can never lose a fragment
                 sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=msg["ReceiptHandle"])
-                seen.add(order_no)
-                logger.info(f"Stored + deleted fragment {order_no}: {word!r}")
 
-    logger.info(f"Collected all {len(seen)} fragments in {time.monotonic() - start:.0f}s")
+                if problem:
+                    rejected += 1
+                    logger.warning(f"Malformed message stored in raw.rejected + deleted: {problem}")
+                elif order_no in seen:
+                    duplicates += 1
+                    logger.info(f"Duplicate fragment {order_no} stored + deleted (dbt keeps one copy)")
+                else:
+                    seen.add(order_no)
+                    logger.info(f"Stored + deleted fragment {order_no}: {word!r}")
+
+    logger.info(
+        f"Collected all {len(seen)} fragments in {time.monotonic() - start:.0f}s "
+        f"({duplicates} duplicates, {rejected} malformed)"
+    )
     return len(seen)
 
 

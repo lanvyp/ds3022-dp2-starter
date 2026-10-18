@@ -21,9 +21,7 @@ dbt build:  stg_fragments → tests → assembled_phrase
 read_phrase → send_solution (dp2-submit) → kit/check_submission.py → receipt
 ```
 
-My DAG sketch:
-
-![DAG sketch](docs/dag.jpg)
+My DAG sketch is in [`docs/dag.jpg`](docs/dag.jpg).
 
 ---
 
@@ -88,6 +86,8 @@ Every time through the loop in `collect`, the pipeline:
 **Why long polling?** The messages show up at random times over about 15 minutes, so the pipeline spends most of its time waiting. If I polled in a fast loop I'd make thousands of calls that come back empty. If I slept for a long time between polls I'd finish way after the last message was ready. With `WaitTimeSeconds=10`, each call waits on the server side and comes back **as soon as** a message is visible. That means it picks up a message almost as soon as it's ready, but when nothing's there it only makes about 6 receive calls a minute (plus one counter check each loop). Capping it at 10 s also means the counters get logged and the timeout gets checked at least every 10 seconds.
 
 When nothing is visible, the response doesn't have a `Messages` key at all, so I use `resp.get("Messages", [])` so it doesn't crash.
+
+**Duplicates and malformed messages.** Before saving, each message goes through `parse_fragment`, which checks that it has an `order_no` from 1 to 21 and a non-empty `word`. If a message fails the check, it gets saved to a separate `raw.rejected` table with the reason, logged as a warning, and **still deleted**, so it never sits on the queue or reaches dbt. Duplicates are saved and deleted too, but they only count once toward the 21, and `stg_fragments` keeps just one copy.
 
 ---
 
