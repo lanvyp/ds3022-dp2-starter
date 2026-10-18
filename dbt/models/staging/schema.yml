@@ -1,0 +1,19 @@
+version: 2
+
+models:
+  - name: stg_fragments
+    description: "One typed, cleaned row per fragment (duplicates removed)."
+    columns:
+      - name: order_no
+        description: "Position of the word in the phrase (1..21)."
+        tests:
+          - not_null
+          - unique
+      - name: word
+        description: "The word for this position, trimmed."
+        tests:
+          - not_null
+      - name: received_at
+        description: "When the pipeline landed the fragment."
+        tests:
+          - not_null

@@ -21,24 +21,27 @@ computing ID or the endpoint: read them from the environment (.env).
 import os
 import time
 from datetime import datetime, timezone
- 
+
 import boto3
 import duckdb
 import requests
+from dbt.cli.main import dbtRunner
 from dotenv import load_dotenv
 from prefect import flow, task, get_run_logger
- 
+
 load_dotenv()
- 
+
 UVA_ID = os.environ["UVA_ID"]
-SCATTER_BASE = "http://127.0.0.1:8000/api/scatter"
-DB_PATH = os.getenv("DUCKDB_PATH", "dp2.duckdb")
+_scatter = os.getenv("SCATTER_URL", "http://127.0.0.1:8000").rstrip("/")
+SCATTER_BASE = _scatter if "/api/scatter" in _scatter else f"{_scatter}/api/scatter"
+DB_PATH = os.getenv("DP2_DUCKDB", "dp2.duckdb")  # same variable dbt/profiles.yml reads
+PLATFORM = "prefect"
 EXPECTED = 21
 TIMEOUT_S = int(os.getenv("DP2_TIMEOUT", "1200"))  # 900 s max delay + headroom
- 
+
 sqs = boto3.client("sqs")
- 
- 
+
+
 @task(retries=0)  # never retry: every POST empties and refills the queue
 def scatter(uva_id: str) -> str:
     logger = get_run_logger()
@@ -47,8 +50,8 @@ def scatter(uva_id: str) -> str:
     payload = resp.json()
     logger.info(f"Scatter response: {payload}")
     return payload["sqs_url"]
- 
- 
+
+
 @task
 def init_db() -> None:
     """Create raw.fragments and clear rows from earlier runs (the POST resent everything)."""
@@ -63,8 +66,8 @@ def init_db() -> None:
             )
         """)
         con.execute("DELETE FROM raw.fragments")
- 
- 
+
+
 def queue_counts(queue_url: str) -> dict:
     attrs = sqs.get_queue_attributes(
         QueueUrl=queue_url,
@@ -81,20 +84,20 @@ def queue_counts(queue_url: str) -> dict:
     }
     counts["total"] = sum(counts.values())
     return counts
- 
- 
+
+
 @task
 def collect(queue_url: str) -> int:
     """Long-poll until all fragments are stored and the queue is empty, or time out."""
     logger = get_run_logger()
     seen: set[str] = set()
     start = time.monotonic()
- 
+
     while True:
         elapsed = time.monotonic() - start
         counts = queue_counts(queue_url)
         logger.info(f"[{elapsed:5.0f}s] stored={len(seen)}/{EXPECTED} queue={counts}")
- 
+
         # Done: every fragment stored AND nothing left on the queue (no dangling messages).
         if len(seen) >= EXPECTED and counts["total"] == 0:
             break
@@ -102,7 +105,7 @@ def collect(queue_url: str) -> int:
             raise TimeoutError(
                 f"Gave up after {TIMEOUT_S}s with {len(seen)}/{EXPECTED} fragments; queue={counts}"
             )
- 
+
         resp = sqs.receive_message(
             QueueUrl=queue_url,
             MaxNumberOfMessages=10,
@@ -113,13 +116,13 @@ def collect(queue_url: str) -> int:
         messages = resp.get("Messages", [])  # key is missing when nothing is visible
         if not messages:
             continue
- 
+
         with duckdb.connect(DB_PATH) as con:
             for msg in messages:
                 attrs = msg["MessageAttributes"]
                 order_no = attrs["order_no"]["StringValue"]
                 word = attrs["word"]["StringValue"]
- 
+
                 # 1) land first ...
                 con.execute(
                     "INSERT INTO raw.fragments VALUES (?, ?, ?, ?)",
@@ -129,24 +132,61 @@ def collect(queue_url: str) -> int:
                 sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=msg["ReceiptHandle"])
                 seen.add(order_no)
                 logger.info(f"Stored + deleted fragment {order_no}: {word!r}")
- 
+
     logger.info(f"Collected all {len(seen)} fragments in {time.monotonic() - start:.0f}s")
     return len(seen)
- 
- 
+
+
+@task
+def run_dbt() -> None:
+    """dbt build = run models + run tests. Any failure raises, so submit never runs."""
+    logger = get_run_logger()
+    result = dbtRunner().invoke(
+        ["build", "--project-dir", "dbt", "--profiles-dir", "dbt"]
+    )
+    if not result.success:
+        raise RuntimeError(f"dbt build failed - not submitting. Exception: {result.exception}")
+    logger.info("dbt build passed: models built and all tests green")
+
+
+@task
+def read_phrase() -> str:
+    with duckdb.connect(DB_PATH) as con:
+        phrase, n_words = con.execute(
+            "SELECT phrase, n_words FROM main.assembled_phrase"
+        ).fetchone()
+    get_run_logger().info(f"Assembled phrase ({n_words} words): {phrase}")
+    return phrase
+
+
+@task(retries=2, retry_delay_seconds=5)  # safe to retry: sending the answer twice is harmless
+def send_solution(uvaid: str, phrase: str, platform: str) -> None:
+    logger = get_run_logger()
+    url = sqs.get_queue_url(QueueName="dp2-submit")["QueueUrl"]
+    response = sqs.send_message(
+        QueueUrl=url,
+        MessageBody="dp2 solution",
+        MessageAttributes={
+            "uvaid":    {"DataType": "String", "StringValue": uvaid},
+            "phrase":   {"DataType": "String", "StringValue": phrase},
+            "platform": {"DataType": "String", "StringValue": platform},
+        },
+    )
+    status = response["ResponseMetadata"]["HTTPStatusCode"]
+    logger.info(f"Submission HTTP status: {status}, MessageId: {response.get('MessageId')}")
+    if status != 200:
+        raise RuntimeError(f"Submission failed with HTTP {status}")
+
+
 @flow(name="dp2-sqs-puzzle", log_prints=True)
 def dp2_pipeline(uva_id: str = UVA_ID):
     queue_url = scatter(uva_id)
     init_db()
     collect(queue_url)
-    # Stage 2 goes here: run_dbt() -> submit()
- 
-    with duckdb.connect(DB_PATH) as con:
-        rows = con.execute(
-            "SELECT order_no, word FROM raw.fragments ORDER BY CAST(order_no AS INTEGER)"
-        ).fetchall()
-    print(" ".join(w for _, w in rows))  # sanity check only; dbt does the real assembly
- 
- 
+    run_dbt()                     # quality gate: raises -> flow fails -> no submission
+    phrase = read_phrase()
+    send_solution(uva_id, phrase, PLATFORM)
+
+
 if __name__ == "__main__":
     dp2_pipeline()

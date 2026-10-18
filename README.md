@@ -159,3 +159,6 @@ You may observe and rerun your pipeline as often as you like, but in the end you
 - [Prefect documentation](https://docs.prefect.io/v3/get-started)
 - [dbt-duckdb adapter](https://github.com/duckdb/dbt-duckdb) and [dbt data tests](https://docs.getdbt.com/docs/build/data-tests)
 - [Moto server mode](https://docs.getmoto.org/en/latest/docs/server_mode.html), [ElasticMQ](https://github.com/softwaremill/elasticmq)
+
+## Receipt
+`C21AD53E68` (paz5at / prefect)
