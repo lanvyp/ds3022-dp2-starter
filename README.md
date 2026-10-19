@@ -97,7 +97,7 @@ When nothing is visible, the response doesn't have a `Messages` key at all, so I
 
 | File | What it does |
 |---|---|
-| `models/staging/stg_fragments.sql` | Casts `order_no` to an integer (otherwise `10` sorts before `2`), trims `word` and turns empty strings into `NULL`, and keeps one row per `order_no` using `row_number()` (the first one received). That way a fragment getting saved twice doesn't break anything. |
+| `models/staging/stg_fragments.sql` | Casts `order_no` to an integer (otherwise `10` sorts before `2`), trims `word` and turns empty strings into `NULL`, and groups by `order_no` + `word`. So an exact duplicate (the same message delivered twice) collapses into one row, but two *different* words for the same position stay as two rows, and then the `unique` test fails and stops the flow. That's on purpose: a duplicate is normal for SQS, but two words for one spot is a real data problem. |
 | `models/staging/schema.yml` | Generic tests: `not_null` and `unique` on `order_no`, and `not_null` on `word` and `received_at`. |
 | `tests/assert_complete_sequence.sql` | My singular test. It fails unless there are exactly 21 rows, 21 distinct order numbers, the min is 1 and the max is 21. All of that together means the numbers go 1 to 21 with no gaps. |
 | `models/marts/assembled_phrase.sql` | One row with the phrase: `string_agg(word, ' ' ORDER BY order_no)`. |
