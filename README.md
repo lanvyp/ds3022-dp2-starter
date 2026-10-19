@@ -1,6 +1,6 @@
 # DS 3022 Data Project 2: The SQS Puzzle
 
-Lanvy Phan (`paz5at`) · Platform: Prefect · Receipt: `C21AD53E68`
+Lanvy Phan (`paz5at`) | Receipt: `C21AD53E68`
 
 This is my Prefect pipeline for the SQS puzzle. It scatters 21 word fragments onto a queue, waits for them to show up (they're delayed randomly), saves each one to DuckDB, uses dbt to check and put them back in order, and only submits the phrase if every dbt test passes.
 
@@ -131,8 +131,6 @@ With the real 30-900 s delays, it collected all 21 fragments in **859 s** (about
 | **dbt** | Cleans and dedupes the data, runs the tests, and builds the phrase in SQL. | Without dbt, the checks would be ad hoc Python. I wouldn't have reusable tests, and nothing would formally stop a bad phrase from being submitted. |
 
 ## Result
-
-> Good tests do not prove your data is correct, but they keep the most embarrassing mistakes far away from your users.
 
 ```
 PASS  paz5at / prefect  receipt: C21AD53E68
