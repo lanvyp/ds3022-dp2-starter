@@ -144,8 +144,21 @@ PASS  paz5at / prefect  receipt: C21AD53E68
 
 ## Chaos round
 
-_Filling this in during Lesson 11._
+With `DP2_CHAOS=1` the scatter API sends 24 messages instead of 21. That's the 21 real ones and 2 duplicates and 1 broken message that doesn't have an `order_no` or `word`.
 
-- What got injected:
-- What happened to my pipeline:
-- What I changed (if anything):
+**What would've broken.** My first version of `collect` just grabbed `msg["MessageAttributes"]["order_no"]["StringValue"]` directly. So a broken message would've crashed it with a `KeyError` before the message got deleted and it would've kept coming back. And if something like `"abc"` got saved as an `order_no`, dbt would fail when it tried to make it a number, so nothing would get submitted.
+
+**How I fixed it.** I added a `parse_fragment` function that checks each message first:
+- If it's broken, it goes into a separate `raw.rejected` table, gets logged as a warning, and still gets deleted. So it doesn't stay on the queue and dbt never sees it.
+- If it's a duplicate, it gets saved and deleted but only counts once. dbt keeps one copy per `order_no` anyway.
+
+**Results.** I ran it twice in chaos mode and both passed. Each run had 2 duplicates and 1 broken message, the queue ended at 0, dbt passed 7/7, and the checker said PASS.
+
+| Run | Messages | Duplicates | Broken | Queue at end | Result |
+|---|---:|---:|---:|---|---|
+| academic-grebe | 24 | 2 | 1 | 0 | PASS |
+| huge-spoonbill | 24 | 2 | 1 | 0 | PASS |
+
+![Chaos run 1](docs/chaos-run-1.png)
+
+![Chaos run 2](docs/chaos-run-2.png)
